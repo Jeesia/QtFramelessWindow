@@ -1,9 +1,12 @@
-#ifndef UI_FRAMELESS_H
+﻿#ifndef UI_FRAMELESS_H
 #define UI_FRAMELESS_H
 
 #include <QtGui>
+#include <QDialog>
+#include <QApplication>
 
 #ifdef Q_OS_WIN
+#include <minmax.h>
 #include <windows.h>
 #include <WinUser.h>
 #include <windowsx.h>
@@ -19,66 +22,72 @@
 //
 template <typename WindowType>
 class FramelessWindow : public WindowType
-{	
+{
 public:
-	explicit FramelessWindow(QWidget *parent = 0, Qt::WindowFlags f = 0 )
-		: WindowType(parent,f),
-		m_firstShow(true)
+	explicit FramelessWindow(QWidget *parent = 0, Qt::WindowFlags f = 0)
+		: WindowType(parent, f)
 	{
-		resize(100,30);	
+		resize(100, 30);
+		toggle_borderless();
 	}
+
+#if(WINVER >= 0x0600) && (QT_VERSION < 0x050000)
+	void extendFrameIntoClientArea(int left, int top, int right, int bottom);
+	void extendFrameIntoClientArea(const QMargins & margins);
+#endif
 
 protected:
-	virtual void showEvent(QShowEvent *event); 
-
-#ifdef Q_OS_WIN
-	void windowBorderless();
-	virtual bool winEvent(MSG *message, long *result);
+#if QT_VERSION >= 0x050000
+	virtual bool nativeEvent(const QByteArray &eventType, void * message, long * result) Q_DECL_OVERRIDE
+	{ return handleNativeEvent((MSG *)message, result) || WindowType::nativeEvent(eventType, message, result); }
+#else
+	virtual bool winEvent(MSG *message, long *result) override
+	{	return handleNativeEvent(message, result) || WindowType::winEvent(message, result);	}
 #endif
+
+	bool handleNativeEvent(MSG *message, long *result);
+	void toggle_borderless();
 
 private:
-#ifdef Q_OS_WIN
-	void borderHitTest(MSG *msg, long *result);
-#endif
+	bool handleHitTest(MSG *msg, long *result);
 
-	bool m_firstShow;
 };
 
+
+#if(WINVER >= 0x0600) && (QT_VERSION < 0x050000)
 template <typename WindowType>
-void FramelessWindow<WindowType>::showEvent(QShowEvent *event)
+void FramelessWindow<WindowType>::extendFrameIntoClientArea(int left, int top, int right, int bottom)
 {
-#ifdef Q_OS_WIN
-	if(m_firstShow){
-		m_firstShow = false;
-		windowBorderless();
-	}
+	extendFrameIntoClientArea(QMargins(left, top, right, bottom));
+}
+
+template <typename WindowType>
+void FramelessWindow<WindowType>::extendFrameIntoClientArea(const QMargins & margins)
+{
+	MARGINS shadow;
+	shadow.cxLeftWidth = margins.left();
+	shadow.cxRightWidth = margins.right();
+	shadow.cyBottomHeight = margins.bottom();
+	shadow.cyTopHeight = margins.top();
+	DwmExtendFrameIntoClientArea((HWND)winId(), &shadow);
+}
 #endif
-	WindowType::showEvent(event);
-}
-
-#ifdef Q_OS_WIN
 
 template <typename WindowType>
-void FramelessWindow<WindowType>::windowBorderless()
+void FramelessWindow<WindowType>::toggle_borderless()
 {
-	if (isVisible())
-	{
-		//see also: http://tunps.com/ws_caption-cause-duilib-program-title-bar-cannot-hide
-		//          http://bbs.csdn.net/topics/90193232
-		SetWindowLong(winId(), GWL_STYLE,
-			GetWindowLong(winId(), GWL_STYLE) & ~WS_SYSMENU);	//WS_CAPTION
+	HWND hwnd = (HWND)winId();
+	//see also: http://tunps.com/ws_caption-cause-duilib-program-title-bar-cannot-hide
+	//          http://bbs.csdn.net/topics/90193232
+	SetWindowLong(hwnd, GWL_STYLE,
+		GetWindowLong(hwnd, GWL_STYLE) & ~WS_SYSMENU);	//WS_CAPTION 
 
-#if(WINVER >= 0x0600)
-		const MARGINS shadow_on = { 1, 1, 1, 1 };
-		DwmExtendFrameIntoClientArea(winId(), &shadow_on);
-#endif 
-		SetWindowPos(winId(), NULL, 0, 0, 0, 0,
-			SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOREDRAW |SWP_NOZORDER);
-	}
+	//redraw frame
+	SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
 }
 
 template <typename WindowType>
-bool FramelessWindow<WindowType>::winEvent(MSG *msg, long *result)
+bool FramelessWindow<WindowType>::handleNativeEvent(MSG *msg, long *result)
 {
 	//see also: https://github.com/melak47/BorderlessWindow
 	//known Issues: QTBUG-30085
@@ -108,42 +117,41 @@ bool FramelessWindow<WindowType>::winEvent(MSG *msg, long *result)
 		}
 		*/
 	case WM_NCCALCSIZE:
-		{
-			//this kills the window frame and title bar we added with
-			//WS_THICKFRAME and WS_CAPTION
-			*result = 0;
-			return true;
-			break;
-		}
+	{
+						  //this kills the window frame and title bar we added with
+						  //WS_THICKFRAME and WS_CAPTION
+						  *result = 0;
+						  return true;
+						  break;
+	}
 	case WM_NCHITTEST:
-		{
-			*result = 0;
+	{
+						 *result = 0;
+						 if (dynamic_cast<QDialog*>(this) == NULL){
+							 if (handleHitTest(msg, result))
+								 return true;
+						 }
 
-			if(dynamic_cast<QDialog*>(this) == NULL){
-				borderHitTest(msg, result);
-				if(*result != 0)
-					return true;
-			}
-
-			QWidget *action = QApplication::widgetAt(QCursor::pos());
-			if(action == this){
-				//*result = HTCLIENT;
-				*result = HTCAPTION;
-				return true;
-			}
-			break;
-		} //end case WM_NCHITTEST
+						 QWidget *action = QApplication::widgetAt(QCursor::pos());
+						 if (action == this){
+							 //*result = HTCLIENT;
+							 *result = HTCAPTION;
+							 return true;
+						 }
+						 break;
+	} //end case WM_NCHITTEST
 	}
 
-	return QWidget::winEvent(msg,result);
+	return false;
 }
 
 template <typename WindowType>
-void FramelessWindow<WindowType>::borderHitTest(MSG *msg, long *result)
+bool FramelessWindow<WindowType>::handleHitTest(MSG *msg, long *result)
 {
-	const int border_width = 7; //in pixels
+	// const int border_width = 7; //in pixels
+	const LONG border_width = 8; //in pixels
 	RECT winrect;
-	GetWindowRect(winId(), &winrect);
+	GetWindowRect((HWND)winId(), &winrect);
 
 	const long x = GET_X_LPARAM(msg->lParam);
 	const long y = GET_Y_LPARAM(msg->lParam);
@@ -154,62 +162,68 @@ void FramelessWindow<WindowType>::borderHitTest(MSG *msg, long *result)
 
 	bool fixedWidth = minimumWidth() == maximumWidth();
 	bool fixedHeight = minimumHeight() == maximumHeight();
-
-	if(!fixedWidth)
-	{
-		//left border
-		if (x >= winrect.left && x < leftRange)
-		{
-			*result = HTLEFT;
-		}
-		//right border
-		if (x < winrect.right && x >= rightRange)
-		{
-			*result = HTRIGHT;
-		}
-	}
-	if(!fixedHeight)
-	{
-		//bottom border
-		if (y < winrect.bottom && y >= bottomRange)
-		{
-			*result = HTBOTTOM;
-		}
-		//top border
-		if (y >= winrect.top && y < topRange)
-		{
-			*result = HTTOP;
-		}
-	}
-	if(!fixedWidth && !fixedHeight)
+	if (!fixedWidth && !fixedHeight)
 	{
 		//bottom left corner
 		if (x >= winrect.left && x < leftRange &&
 			y < winrect.bottom && y >= bottomRange)
 		{
 			*result = HTBOTTOMLEFT;
+			return true;
 		}
 		//bottom right corner
 		if (x < winrect.right && x >= rightRange &&
 			y < winrect.bottom && y >= bottomRange)
 		{
 			*result = HTBOTTOMRIGHT;
+			return true;
 		}
 		//top left corner
 		if (x >= winrect.left && x < leftRange &&
-			y >= winrect.top && y < topRange )
+			y >= winrect.top && y < topRange)
 		{
 			*result = HTTOPLEFT;
+			return true;
 		}
 		//top right corner
 		if (x < winrect.right && x >= rightRange &&
-			y >= winrect.top && y < topRange )
+			y >= winrect.top && y < topRange)
 		{
 			*result = HTTOPRIGHT;
+			return true;
 		}
 	}
+	if (!fixedWidth)
+	{
+		//left border
+		if (x >= winrect.left && x < leftRange)
+		{
+			*result = HTLEFT;
+			return true;
+		}
+		//right border
+		if (x < winrect.right && x >= rightRange)
+		{
+			*result = HTRIGHT;
+			return true;
+		}
+	}
+	if (!fixedHeight)
+	{
+		//bottom border
+		if (y < winrect.bottom && y >= bottomRange)
+		{
+			*result = HTBOTTOM;
+			return true;
+		}
+		//top border
+		if (y >= winrect.top && y < topRange)
+		{
+			*result = HTTOP;
+			return true;
+		}
+	}
+	return false;
 }
-
-#endif //end Q_OS_WIN
 
 #endif //FRAMELESSWINDOW_H
